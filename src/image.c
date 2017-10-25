@@ -25,6 +25,70 @@ float get_color(int c, int x, int max)
     return r;
 }
 
+image mask_to_rgb(image mask)
+{
+    int n = mask.c;
+    image im = make_image(mask.w, mask.h, 3);
+    int i, j;
+    for(j = 0; j < n; ++j){
+        int offset = j*123457 % n;
+        float red = get_color(2,offset,n);
+        float green = get_color(1,offset,n);
+        float blue = get_color(0,offset,n);
+        for(i = 0; i < im.w*im.h; ++i){
+            im.data[i + 0*im.w*im.h] += mask.data[j*im.h*im.w + i]*red;
+            im.data[i + 1*im.w*im.h] += mask.data[j*im.h*im.w + i]*green;
+            im.data[i + 2*im.w*im.h] += mask.data[j*im.h*im.w + i]*blue;
+        }
+    }
+    return im;
+}
+
+static float get_pixel(image m, int x, int y, int c)
+{
+    assert(x < m.w && y < m.h && c < m.c);
+    return m.data[c*m.h*m.w + y*m.w + x];
+}
+static float get_pixel_extend(image m, int x, int y, int c)
+{
+    if(x < 0 || x >= m.w || y < 0 || y >= m.h) return 0;
+    /*
+    if(x < 0) x = 0;
+    if(x >= m.w) x = m.w-1;
+    if(y < 0) y = 0;
+    if(y >= m.h) y = m.h-1;
+    */
+    if(c < 0 || c >= m.c) return 0;
+    return get_pixel(m, x, y, c);
+}
+static void set_pixel(image m, int x, int y, int c, float val)
+{
+    if (x < 0 || y < 0 || c < 0 || x >= m.w || y >= m.h || c >= m.c) return;
+    assert(x < m.w && y < m.h && c < m.c);
+    m.data[c*m.h*m.w + y*m.w + x] = val;
+}
+static void add_pixel(image m, int x, int y, int c, float val)
+{
+    assert(x < m.w && y < m.h && c < m.c);
+    m.data[c*m.h*m.w + y*m.w + x] += val;
+}
+
+static float bilinear_interpolate(image im, float x, float y, int c)
+{
+    int ix = (int) floorf(x);
+    int iy = (int) floorf(y);
+
+    float dx = x - ix;
+    float dy = y - iy;
+
+    float val = (1-dy) * (1-dx) * get_pixel_extend(im, ix, iy, c) + 
+        dy     * (1-dx) * get_pixel_extend(im, ix, iy+1, c) + 
+        (1-dy) *   dx   * get_pixel_extend(im, ix+1, iy, c) +
+        dy     *   dx   * get_pixel_extend(im, ix+1, iy+1, c);
+    return val;
+}
+
+
 void composite_image(image source, image dest, int dx, int dy)
 {
     int x,y,k;
@@ -171,24 +235,36 @@ image **load_alphabet()
     return alphabets;
 }
 
-void draw_detections(image im, int num, float thresh, box *boxes, float **probs, char **names, image **alphabet, int classes)
+void draw_detections(image im, int num, float thresh, box *boxes, float **probs, float **masks, char **names, image **alphabet, int classes)
 {
-    int i;
+    int i,j;
 
     for(i = 0; i < num; ++i){
-        int class = max_index(probs[i], classes);
-        float prob = probs[i][class];
-        if(prob > thresh){
-
-            int width = im.h * .012;
-
-            if(0){
-                width = pow(prob, 1./2.)*10+1;
-                alphabet = 0;
+        char labelstr[4096] = {0};
+        int class = -1;
+        for(j = 0; j < classes; ++j){
+            if (probs[i][j] > thresh){
+                if (class < 0) {
+                    strcat(labelstr, names[j]);
+                    class = j;
+                } else {
+                    strcat(labelstr, ", ");
+                    strcat(labelstr, names[j]);
+                }
+                printf("%s: %.0f%%\n", names[j], probs[i][j]*100);
             }
+        }
+        if(class >= 0){
+            int width = im.h * .006;
+
+            /*
+               if(0){
+               width = pow(prob, 1./2.)*10+1;
+               alphabet = 0;
+               }
+             */
 
             //printf("%d %s: %.0f%%\n", i, names[class], prob*100);
-            printf("%s: %.0f%%\n", names[class], prob*100);
             int offset = class*123457 % classes;
             float red = get_color(2,offset,classes);
             float green = get_color(1,offset,classes);
@@ -214,9 +290,18 @@ void draw_detections(image im, int num, float thresh, box *boxes, float **probs,
 
             draw_box_width(im, left, top, right, bot, width, red, green, blue);
             if (alphabet) {
-                image label = get_label(alphabet, names[class], (im.h*.03)/10);
+                image label = get_label(alphabet, labelstr, (im.h*.03)/10);
                 draw_label(im, top + width, left, label, rgb);
                 free_image(label);
+            }
+            if (masks){
+                image mask = float_to_image(14, 14, 1, masks[i]);
+                image resized_mask = resize_image(mask, b.w*im.w, b.h*im.h);
+                image tmask = threshold_image(resized_mask, .5);
+                embed_image(tmask, im, left, top);
+                free_image(mask);
+                free_image(resized_mask);
+                free_image(tmask);
             }
         }
     }
@@ -902,8 +987,9 @@ image random_crop_image(image im, int w, int h)
     return crop;
 }
 
-image random_augment_image(image im, float angle, float aspect, int low, int high, int size)
+augment_args random_augment_args(image im, float angle, float aspect, int low, int high, int w, int h)
 {
+    augment_args a = {0};
     aspect = rand_scale(aspect);
     int r = rand_int(low, high);
     int min = (im.h < im.w*aspect) ? im.h : im.w*aspect;
@@ -911,15 +997,27 @@ image random_augment_image(image im, float angle, float aspect, int low, int hig
 
     float rad = rand_uniform(-angle, angle) * TWO_PI / 360.;
 
-    float dx = (im.w*scale/aspect - size) / 2.;
-    float dy = (im.h*scale - size) / 2.;
-    if(dx < 0) dx = 0;
-    if(dy < 0) dy = 0;
+    float dx = (im.w*scale/aspect - w) / 2.;
+    float dy = (im.h*scale - w) / 2.;
+    //if(dx < 0) dx = 0;
+    //if(dy < 0) dy = 0;
     dx = rand_uniform(-dx, dx);
     dy = rand_uniform(-dy, dy);
 
-    image crop = rotate_crop_image(im, rad, scale, size, size, dx, dy, aspect);
+    a.rad = rad;
+    a.scale = scale;
+    a.w = w;
+    a.h = h;
+    a.dx = dx;
+    a.dy = dy;
+    a.aspect = aspect;
+    return a;
+}
 
+image random_augment_image(image im, float angle, float aspect, int low, int high, int w, int h)
+{
+    augment_args a = random_augment_args(im, angle, aspect, low, high, w, h);
+    image crop = rotate_crop_image(im, a.rad, a.scale, a.w, a.h, a.dx, a.dy, a.aspect);
     return crop;
 }
 
@@ -1215,21 +1313,6 @@ void saturate_exposure_image(image im, float sat, float exposure)
     constrain_image(im);
 }
 
-float bilinear_interpolate(image im, float x, float y, int c)
-{
-    int ix = (int) floorf(x);
-    int iy = (int) floorf(y);
-
-    float dx = x - ix;
-    float dy = y - iy;
-
-    float val = (1-dy) * (1-dx) * get_pixel_extend(im, ix, iy, c) + 
-        dy     * (1-dx) * get_pixel_extend(im, ix, iy+1, c) + 
-        (1-dy) *   dx   * get_pixel_extend(im, ix+1, iy, c) +
-        dy     *   dx   * get_pixel_extend(im, ix+1, iy+1, c);
-    return val;
-}
-
 image resize_image(image im, int w, int h)
 {
     image resized = make_image(w, h, im.c);   
@@ -1300,7 +1383,7 @@ void test_resize(char *filename)
     show_image(c4, "C4");
 #ifdef OPENCV
     while(1){
-        image aug = random_augment_image(im, 0, .75, 320, 448, 320);
+        image aug = random_augment_image(im, 0, .75, 320, 448, 320, 320);
         show_image(aug, "aug");
         free_image(aug);
 
@@ -1379,33 +1462,6 @@ image get_image_layer(image m, int l)
     }
     return out;
 }
-
-float get_pixel(image m, int x, int y, int c)
-{
-    assert(x < m.w && y < m.h && c < m.c);
-    return m.data[c*m.h*m.w + y*m.w + x];
-}
-float get_pixel_extend(image m, int x, int y, int c)
-{
-    if(x < 0) x = 0;
-    if(x >= m.w) x = m.w-1;
-    if(y < 0) y = 0;
-    if(y >= m.h) y = m.h-1;
-    if(c < 0 || c >= m.c) return 0;
-    return get_pixel(m, x, y, c);
-}
-void set_pixel(image m, int x, int y, int c, float val)
-{
-    if (x < 0 || y < 0 || c < 0 || x >= m.w || y >= m.h || c >= m.c) return;
-    assert(x < m.w && y < m.h && c < m.c);
-    m.data[c*m.h*m.w + y*m.w + x] = val;
-}
-void add_pixel(image m, int x, int y, int c, float val)
-{
-    assert(x < m.w && y < m.h && c < m.c);
-    m.data[c*m.h*m.w + y*m.w + x] += val;
-}
-
 void print_image(image m)
 {
     int i, j, k;

@@ -6,8 +6,29 @@
 #include <unistd.h>
 #include <float.h>
 #include <limits.h>
+#include <time.h>
 
 #include "utils.h"
+
+
+/*
+// old timing. is it better? who knows!!
+double get_wall_time()
+{
+    struct timeval time;
+    if (gettimeofday(&time,NULL)){
+        return 0;
+    }
+    return (double)time.tv_sec + (double)time.tv_usec * .000001;
+}
+*/
+
+double what_time_is_it_now()
+{
+    struct timespec now;
+    clock_gettime(CLOCK_REALTIME, &now);
+    return now.tv_sec + now.tv_nsec*1e-9;
+}
 
 int *read_intlist(char *gpu_list, int *ngpus, int d)
 {
@@ -215,6 +236,21 @@ void error(const char *s)
     perror(s);
     assert(0);
     exit(-1);
+}
+
+unsigned char *read_file(char *filename)
+{
+    FILE *fp = fopen(filename, "rb");
+    size_t size;
+
+    fseek(fp, 0, SEEK_END); 
+    size = ftell(fp);
+    fseek(fp, 0, SEEK_SET); 
+
+    unsigned char *text = calloc(size+1, sizeof(char));
+    fread(text, 1, size, fp);
+    fclose(fp);
+    return text;
 }
 
 void malloc_error()
@@ -608,13 +644,13 @@ float rand_normal()
 size_t rand_size_t()
 {
     return  ((size_t)(rand()&0xff) << 56) | 
-            ((size_t)(rand()&0xff) << 48) |
-            ((size_t)(rand()&0xff) << 40) |
-            ((size_t)(rand()&0xff) << 32) |
-            ((size_t)(rand()&0xff) << 24) |
-            ((size_t)(rand()&0xff) << 16) |
-            ((size_t)(rand()&0xff) << 8) |
-            ((size_t)(rand()&0xff) << 0);
+        ((size_t)(rand()&0xff) << 48) |
+        ((size_t)(rand()&0xff) << 40) |
+        ((size_t)(rand()&0xff) << 32) |
+        ((size_t)(rand()&0xff) << 24) |
+        ((size_t)(rand()&0xff) << 16) |
+        ((size_t)(rand()&0xff) << 8) |
+        ((size_t)(rand()&0xff) << 0);
 }
 
 float rand_uniform(float min, float max)
